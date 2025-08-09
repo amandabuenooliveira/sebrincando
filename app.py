@@ -159,7 +159,7 @@ with st.sidebar:
     faixas_m = [c for c in ORDER_MENSAL if c in df["mensalidade"].dropna().unique()]
     sel_mens = st.multiselect("Mensalidade (faixas)", faixas_m, default=faixas_m)
 
-    apenas_brinc = st.checkbox("Somente quem adota *Brincando*", value=False)
+
 
 # aplica filtros
 flt = df.copy()
@@ -173,8 +173,6 @@ if sel_fa:
     flt = flt[flt["faixa_alunos"].isin(sel_fa)]
 if sel_mens:
     flt = flt[flt["mensalidade"].isin(sel_mens)]
-if apenas_brinc:
-    flt = flt[flt["adota_brincando"] == True]
 
 # ========= KPIs =========
 st.title("📚 Perfil de Escolas — Brincando com…")
