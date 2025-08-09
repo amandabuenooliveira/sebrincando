@@ -277,14 +277,25 @@ else:
     st.info("Sem dados para montar o heatmap de adoções.")
 
 # 5) NOVA VISUALIZAÇÃO (substitui a SOW):
+# 5) NOVA VISUALIZAÇÃO (substitui a SOW):
 #    Heatmap de taxa de adoção do Brincando por Faixa de alunos × Mensalidade
 st.subheader("Taxa de adoção do Brincando — Faixa de alunos × Mensalidade")
-base = flt.dropna(subset=["faixa_alunos","mensalidade"]).copy()
+
+base = flt.dropna(subset=["faixa_alunos", "mensalidade"]).copy()
 if not base.empty:
-    grp = (base
-           .groupby(["faixa_alunos","mensalidade"], as_index=False)
-           .agg(escolas=("NOME ESCOLA","count"),
-                adotantes=("adota_brincando", lambda s: (s==True).sum())))
+    # garante booleano para somar adotantes
+    base["adota_brincando"] = base["adota_brincando"].astype(bool)
+
+    # observed=True evita combinações categoriais inexistentes (corrige o ValueError)
+    grp = (
+        base.groupby(["faixa_alunos", "mensalidade"], observed=True)
+            .agg(
+                escolas=("NOME ESCOLA", "count"),
+                adotantes=("adota_brincando", "sum")
+            )
+            .reset_index()
+    )
+
     grp["taxa_%"] = (grp["adotantes"] / grp["escolas"] * 100).round(1)
     grp["faixa_alunos_str"] = grp["faixa_alunos"].astype(str)
     grp["mensalidade_str"] = grp["mensalidade"].astype(str)
@@ -293,11 +304,13 @@ if not base.empty:
         x=alt.X("mensalidade_str:N", sort=ORDER_MENSAL, title="Mensalidade"),
         y=alt.Y("faixa_alunos_str:N", sort=ORDER_FAIXA_ALUNOS, title="Faixa de alunos"),
         color=alt.Color("taxa_%:Q", title="Taxa de adoção (%)"),
-        tooltip=["faixa_alunos_str","mensalidade_str","escolas","adotantes","taxa_%"]
+        tooltip=["faixa_alunos_str", "mensalidade_str", "escolas", "adotantes", "taxa_%"]
     ).properties(height=280)
+
     st.altair_chart(heat2, use_container_width=True)
 else:
     st.info("Sem dados suficientes para calcular a taxa de adoção por faixa de alunos × mensalidade.")
+
 
 # 6) Tabela detalhada + download
 st.subheader("Detalhe das escolas (após filtros)")
