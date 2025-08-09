@@ -1,3 +1,4 @@
+
 from pathlib import Path
 import streamlit as st
 import pandas as pd
@@ -30,14 +31,11 @@ ORDER_REGIAO = ["Norte","Nordeste","Centro-Oeste","Sudeste","Sul"]
 
 # ========= Utils =========
 def strip_cols(df: pd.DataFrame) -> pd.DataFrame:
-    # remove espaços à esquerda/direita do nome das colunas
     df.columns = [str(c).strip() for c in df.columns]
-    # padroniza a coluna 'precificação' que às vezes vem como ' precificação '
     df.rename(columns={"precificacao":"precificação"}, inplace=True, errors="ignore")
     return df
 
 def ensure_expected(df: pd.DataFrame) -> pd.DataFrame:
-    # Se alguma coluna esperada não veio, cria vazia
     for c in EXPECTED_COLS:
         if c not in df.columns:
             df[c] = pd.NA
@@ -50,11 +48,67 @@ def as_int_safe(x):
     except Exception:
         return pd.NA
 
+def _br_to_float(num_str: str) -> float:
+    """Converte número PT-BR (p.ex. '1.400', '2.199,50') em float."""
+    s = num_str.replace(".", "").replace(",", ".")
+    return float(s)
+
+def bucket_mensalidade(val) -> str | pd._libs.missing.NAType:
+    """
+    Coloca a mensalidade em faixas canônicas, aceitando:
+    - texto com faixa ('1.400 a 2.199', 'até 399')
+    - valores monetários ('R$ 1.850,00')
+    - números simples ('1800')
+    """
+    if pd.isna(val):
+        return pd.NA
+    s = str(val).strip().lower()
+
+    # casos explícitos 'até 399'
+    if "até" in s and "399" in s:
+        return "até 399"
+
+    # captura números no formato PT-BR (1.400 / 2.199,50 / 1800)
+    matches = re.findall(r"\d{1,3}(?:\.\d{3})*(?:,\d+)?|\d+", s)
+    nums = []
+    for m in matches:
+        try:
+            nums.append(_br_to_float(m))
+        except Exception:
+            continue
+
+    val_ref = None
+    if len(nums) >= 2:
+        # se for faixa 'x a y', usa a média para decidir a classe
+        val_ref = (nums[0] + nums[1]) / 2.0
+    elif len(nums) == 1:
+        val_ref = nums[0]
+
+    # Se não conseguimos extrair número, tenta padrões de faixa por texto:
+    if val_ref is None:
+        if "400" in s and "799" in s: return "400 a 799"
+        if "800" in s and ("1.399" in s or "1399" in s): return "800 a 1.399"
+        if ("1.400" in s or "1400" in s) and ("2.199" in s or "2199" in s): return "1.400 a 2.199"
+        if ("2.200" in s or "2200" in s) and ("3.499" in s or "3499" in s): return "2.200 a 3.499"
+        if "3500" in s or "3.500" in s or "+" in s: return "3.500+"
+        return pd.NA
+
+    # aplica os limites das faixas
+    if val_ref <= 399:
+        return "até 399"
+    if 400 <= val_ref <= 799:
+        return "400 a 799"
+    if 800 <= val_ref <= 1399:
+        return "800 a 1.399"
+    if 1400 <= val_ref <= 2199:
+        return "1.400 a 2.199"
+    if 2200 <= val_ref <= 3499:
+        return "2.200 a 3.499"
+    return "3.500+"
+
 def to_money(x):
     if pd.isna(x): return np.nan
-    s = str(x)
-    s = s.replace("R$", "").replace(" ", "")
-    # remove separador de milhar '.', mantém decimal brasileiro ','
+    s = str(x).replace("R$", "").replace(" ", "")
     s = s.replace(".", "").replace(",", ".")
     s = re.sub(r"[^\d\.\-]", "", s)
     try:
@@ -62,69 +116,40 @@ def to_money(x):
     except Exception:
         return np.nan
 
-def to_percent(x):
-    if pd.isna(x): return np.nan
-    s = str(x).strip().replace("%","").replace(",",".")
-    s = re.sub(r"[^\d\.\-]", "", s)
-    try:
-        return float(s)
-    except Exception:
-        return np.nan
-
-def cat_order(series, order_list):
-    return pd.Categorical(series, categories=order_list, ordered=True)
-
 @st.cache_data(show_spinner=False)
 def load_data(uploaded_file=None):
-    # 1) usa upload se houver
     if uploaded_file is not None:
-        df = pd.read_excel(uploaded_file)
-        return df
-    # 2) arquivo do repo
+        return pd.read_excel(uploaded_file, engine="openpyxl")
     if DATAFILE.exists():
-        return pd.read_excel(DATAFILE)
-    # 3) nada encontrado
+        return pd.read_excel(DATAFILE, engine="openpyxl")
     return pd.DataFrame()
 
 def clean(df: pd.DataFrame) -> pd.DataFrame:
     df = strip_cols(df.copy())
     df = ensure_expected(df)
 
-    # Tipagem/normalizações
+    # tipagem / normalizações principais
     df["alunado_total"] = df["alunado_total"].map(as_int_safe)
-
-    # monetários
     df["precificação"] = df["precificação"].map(to_money)
     df["potencial_mercado"] = df["potencial_mercado"].map(to_money)
 
-    # percentuais
-    df["sow de s.e. edb - considerando total adocao do mercado"] = \
-        df["sow de s.e. edb - considerando total adocao do mercado"].map(to_percent)
-
-    # categorias ordenadas
-    df["mensalidade"] = df["mensalidade"].astype(str).str.strip()
-    # mapear intervalos comuns para nossas faixas canônicas
-    df.loc[df["mensalidade"].str.contains(r"^até\s*399$", case=False, regex=True), "mensalidade"] = "até 399"
-    df.loc[df["mensalidade"].str.contains(r"400\s*a\s*799", case=False, regex=True), "mensalidade"] = "400 a 799"
-    df.loc[df["mensalidade"].str.contains(r"800\s*a\s*1\.?399", case=False, regex=True), "mensalidade"] = "800 a 1.399"
-    df.loc[df["mensalidade"].str.contains(r"1\.?400\s*a\s*2\.?199", case=False, regex=True), "mensalidade"] = "1.400 a 2.199"
-    df.loc[df["mensalidade"].str.contains(r"2\.?200\s*a\s*3\.?499", case=False, regex=True), "mensalidade"] = "2.200 a 3.499"
-    df.loc[df["mensalidade"].str.contains(r"3\.?500\+?", case=False, regex=True), "mensalidade"] = "3.500+"
-    df["mensalidade"] = cat_order(df["mensalidade"], ORDER_MENSAL)
-
-    df["faixa_alunos"] = cat_order(df["faixa_alunos"].astype(str).str.strip(), ORDER_FAIXA_ALUNOS)
+    # regiões e faixas
     df["REGIÃO"] = pd.Categorical(df["REGIÃO"].astype(str).str.strip(), categories=ORDER_REGIAO, ordered=True)
+    df["faixa_alunos"] = pd.Categorical(df["faixa_alunos"].astype(str).str.strip(), categories=ORDER_FAIXA_ALUNOS, ordered=True)
 
-    # Flag: adota sistema Brincando (com base em 'adota s.e. edb - prot', 'ADOTA SISTEMA', 'adota se edb')
+    # mensalidade → bucketing robusto
+    df["mensalidade"] = df["mensalidade"].apply(bucket_mensalidade)
+    df["mensalidade"] = pd.Categorical(df["mensalidade"], categories=ORDER_MENSAL, ordered=True)
+
+    # flag Brincando
     def flag_brincando(row):
         prot = str(row.get("adota s.e. edb - prot", "")).upper()
         ad_sis = str(row.get("ADOTA SISTEMA", "")).strip().lower()
         ad_se = str(row.get("adota se edb", "")).strip().lower()
         return ("BRINCANDO" in prot) or (ad_sis == "sim") or (ad_se == "sim")
-
     df["adota_brincando"] = df.apply(flag_brincando, axis=1)
 
-    # Confessional e pedra
+    # confessional/pedra
     df["Confessional"] = df["Confessional"].astype(str).str.strip().replace(
         {"Si":"Sim","Nao":"Não","nao":"Não","NA":"S/I"})
     df["pedra"] = df["pedra"].astype(str).str.strip()
@@ -160,7 +185,6 @@ with st.sidebar:
     sel_mens = st.multiselect("Mensalidade (faixas)", faixas_m, default=faixas_m)
 
 
-
 # aplica filtros
 flt = df.copy()
 if sel_reg:
@@ -173,6 +197,7 @@ if sel_fa:
     flt = flt[flt["faixa_alunos"].isin(sel_fa)]
 if sel_mens:
     flt = flt[flt["mensalidade"].isin(sel_mens)]
+
 
 # ========= KPIs =========
 st.title("📚 Perfil de Escolas — Brincando com…")
@@ -251,20 +276,28 @@ if not hm.empty:
 else:
     st.info("Sem dados para montar o heatmap de adoções.")
 
-# 5) SOW do Sistema EDB — distribuição
-if "sow de s.e. edb - considerando total adocao do mercado" in flt.columns:
-    st.subheader("SOW do Sistema EDB — distribuição (%)")
-    sow = flt[["NOME ESCOLA","REGIÃO","sow de s.e. edb - considerando total adocao do mercado"]].dropna()
-    if not sow.empty:
-        hist = alt.Chart(sow).mark_bar().encode(
-            x=alt.X("sow de s.e. edb - considerando total adocao do mercado:Q", bin=alt.Bin(maxbins=20), title="SOW (%)"),
-            y=alt.Y("count():Q", title="Escolas"),
-            color="REGIÃO:N",
-            tooltip=["REGIÃO","count()"]
-        )
-        st.altair_chart(hist, use_container_width=True)
-    else:
-        st.info("Sem dados de SOW no filtro atual.")
+# 5) NOVA VISUALIZAÇÃO (substitui a SOW):
+#    Heatmap de taxa de adoção do Brincando por Faixa de alunos × Mensalidade
+st.subheader("Taxa de adoção do Brincando — Faixa de alunos × Mensalidade")
+base = flt.dropna(subset=["faixa_alunos","mensalidade"]).copy()
+if not base.empty:
+    grp = (base
+           .groupby(["faixa_alunos","mensalidade"], as_index=False)
+           .agg(escolas=("NOME ESCOLA","count"),
+                adotantes=("adota_brincando", lambda s: (s==True).sum())))
+    grp["taxa_%"] = (grp["adotantes"] / grp["escolas"] * 100).round(1)
+    grp["faixa_alunos_str"] = grp["faixa_alunos"].astype(str)
+    grp["mensalidade_str"] = grp["mensalidade"].astype(str)
+
+    heat2 = alt.Chart(grp).mark_rect().encode(
+        x=alt.X("mensalidade_str:N", sort=ORDER_MENSAL, title="Mensalidade"),
+        y=alt.Y("faixa_alunos_str:N", sort=ORDER_FAIXA_ALUNOS, title="Faixa de alunos"),
+        color=alt.Color("taxa_%:Q", title="Taxa de adoção (%)"),
+        tooltip=["faixa_alunos_str","mensalidade_str","escolas","adotantes","taxa_%"]
+    ).properties(height=280)
+    st.altair_chart(heat2, use_container_width=True)
+else:
+    st.info("Sem dados suficientes para calcular a taxa de adoção por faixa de alunos × mensalidade.")
 
 # 6) Tabela detalhada + download
 st.subheader("Detalhe das escolas (após filtros)")
