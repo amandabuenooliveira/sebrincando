@@ -90,7 +90,7 @@ def bucket_mensalidade(val) -> str | pd._libs.missing.NAType:
         if "800" in s and ("1.399" in s or "1399" in s): return "800 a 1.399"
         if ("1.400" in s or "1400" in s) and ("2.199" in s or "2199" in s): return "1.400 a 2.199"
         if ("2.200" in s or "2200" in s) and ("3.499" in s or "3499" in s): return "2.200 a 3.499"
-        if "3500" in s or "3.500" in s or "+" in s: return "3.500+"
+
         return pd.NA
 
     # aplica os limites das faixas
